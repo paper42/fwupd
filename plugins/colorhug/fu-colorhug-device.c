@@ -428,23 +428,21 @@ fu_colorhug_device_write_firmware (FuDevice *device,
 	g_autoptr(GPtrArray) chunks = NULL;
 
 	/* progress */
-	fu_progress_set_custom_steps(progress, 19 /* erase */, 45 /* write */, 36 /* read */, -1);
+	fu_progress_set_id(progress, G_STRLOC);
+	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_BUSY, 1);
+	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_ERASE, 19);
+	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_WRITE, 44);
+	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_VERIFY, 35);
 
 	/* get default image */
 	fw = fu_firmware_get_bytes (firmware, error);
 	if (fw == NULL)
 		return FALSE;
 
-	/* build packets */
-	chunks = fu_chunk_array_new_from_bytes (fw,
-						self->start_addr,
-						0x00,	/* page_sz */
-						CH_FLASH_TRANSFER_BLOCK_SIZE);
-
 	/* don't auto-boot firmware */
-	fu_device_set_status (device, FWUPD_STATUS_DEVICE_WRITE);
 	if (!fu_colorhug_device_set_flash_success (self, FALSE, error))
 		return FALSE;
+	fu_progress_step_done(progress);
 
 	/* erase flash */
 	if (!fu_colorhug_device_erase (self, self->start_addr, g_bytes_get_size (fw), error))
@@ -452,6 +450,10 @@ fu_colorhug_device_write_firmware (FuDevice *device,
 	fu_progress_step_done(progress);
 
 	/* write each block */
+	chunks = fu_chunk_array_new_from_bytes(fw,
+					       self->start_addr,
+					       0x00, /* page_sz */
+					       CH_FLASH_TRANSFER_BLOCK_SIZE);
 	for (guint i = 0; i < chunks->len; i++) {
 		FuChunk *chk = g_ptr_array_index (chunks, i);
 		guint8 buf[CH_FLASH_TRANSFER_BLOCK_SIZE+4];
@@ -486,7 +488,6 @@ fu_colorhug_device_write_firmware (FuDevice *device,
 	fu_progress_step_done(progress);
 
 	/* verify each block */
-	fu_device_set_status (device, FWUPD_STATUS_DEVICE_VERIFY);
 	for (guint i = 0; i < chunks->len; i++) {
 		FuChunk *chk = g_ptr_array_index (chunks, i);
 		guint8 buf[3];

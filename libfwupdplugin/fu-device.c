@@ -3125,8 +3125,9 @@ fu_device_set_remove_delay (FuDevice *self, guint remove_delay)
 FwupdStatus
 fu_device_get_status (FuDevice *self)
 {
+	FuDevicePrivate *priv = GET_PRIVATE(self);
 	g_return_val_if_fail (FU_IS_DEVICE (self), 0);
-	return fwupd_device_get_status (FWUPD_DEVICE (self));
+	return fu_progress_get_status(priv->progress);
 }
 
 /**
@@ -3141,8 +3142,9 @@ fu_device_get_status (FuDevice *self)
 void
 fu_device_set_status (FuDevice *self, FwupdStatus status)
 {
+	FuDevicePrivate *priv = GET_PRIVATE(self);
 	g_return_if_fail (FU_IS_DEVICE (self));
-	fwupd_device_set_status (FWUPD_DEVICE (self), status);
+	fu_progress_set_status(priv->progress, status);
 }
 
 /**
@@ -4656,6 +4658,12 @@ fu_device_progress_percentage_changed_cb(FuProgress *progress, guint percentage,
 }
 
 static void
+fu_device_progress_status_changed_cb(FuProgress *progress, FwupdStatus status, FuDevice *self)
+{
+	fwupd_device_set_status(FWUPD_DEVICE(self), status);
+}
+
+static void
 fu_device_class_init (FuDeviceClass *klass)
 {
 	GObjectClass *object_class = G_OBJECT_CLASS (klass);
@@ -4758,10 +4766,14 @@ fu_device_init (FuDevice *self)
 	    g_signal_connect(self, "notify::flags", G_CALLBACK(fu_device_flags_notify_cb), NULL);
 
 	/* allows more verbose profiling for plugin development */
-	fu_progress_set_profile(priv->progress, g_getenv("FWUPD_PROGRESS_PROFILE") != NULL);
+	fu_progress_set_profile(priv->progress, g_getenv("FWUPD_VERBOSE") != NULL);
 	g_signal_connect(priv->progress,
 			 "percentage-changed",
 			 G_CALLBACK(fu_device_progress_percentage_changed_cb),
+			 self);
+	g_signal_connect(priv->progress,
+			 "status-changed",
+			 G_CALLBACK(fu_device_progress_status_changed_cb),
 			 self);
 }
 

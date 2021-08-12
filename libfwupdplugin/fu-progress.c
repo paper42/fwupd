@@ -57,25 +57,116 @@
 typedef struct {
 	gchar *id;
 	guint percentage;
-
+	FwupdStatus status;
+	GPtrArray *steps;
 	gboolean profile;
 	gdouble global_share;
-	gdouble *step_profile;
 	GTimer *timer;
 	guint step_now;
-	guint *step_data;
 	guint step_max;
 	gulong percentage_child_id;
+	gulong status_child_id;
 	FuProgress *child;
 	FuProgress *parent; /* no-ref */
 } FuProgressPrivate;
 
-enum { SIGNAL_PERCENTAGE_CHANGED, SIGNAL_LAST };
+typedef struct {
+	FwupdStatus status;
+	guint value;
+	gdouble profile;
+} FuProgressStep;
+
+enum { SIGNAL_PERCENTAGE_CHANGED, SIGNAL_STATUS_CHANGED, SIGNAL_LAST };
 
 static guint signals[SIGNAL_LAST] = {0};
 
 G_DEFINE_TYPE_WITH_PRIVATE(FuProgress, fu_progress, G_TYPE_OBJECT)
 #define GET_PRIVATE(o) (fu_progress_get_instance_private(o))
+
+/**
+ * fu_progress_get_id:
+ * @self: a #FuProgress
+ *
+ * Return the id of the progress, which is normally set by the caller.
+ *
+ * Returns: progress ID
+ *
+ * Since: 1.7.0
+ **/
+const gchar *
+fu_progress_get_id(FuProgress *self)
+{
+	FuProgressPrivate *priv = GET_PRIVATE(self);
+	g_return_val_if_fail(FU_IS_PROGRESS(self), NULL);
+	return priv->id;
+}
+
+/**
+ * fu_progress_set_id:
+ * @self: a #FuProgress
+ * @id: progress ID, normally `G_STRLOC`
+ *
+ * Sets the id of the progress.
+ *
+ * Since: 1.7.0
+ **/
+void
+fu_progress_set_id(FuProgress *self, const gchar *id)
+{
+	FuProgressPrivate *priv = GET_PRIVATE(self);
+	g_return_if_fail(FU_IS_PROGRESS(self));
+	g_return_if_fail(id != NULL);
+
+	/* not changed */
+	if (g_strcmp0(priv->id, id) == 0)
+		return;
+
+	/* set id */
+	g_free(priv->id);
+	priv->id = g_strdup(id);
+}
+
+/**
+ * fu_progress_get_status:
+ * @self: a #FuProgress
+ *
+ * Return the status of the progress, which is normally indirectly by fu_progress_add_step().
+ *
+ * Returns: status
+ *
+ * Since: 1.7.0
+ **/
+FwupdStatus
+fu_progress_get_status(FuProgress *self)
+{
+	FuProgressPrivate *priv = GET_PRIVATE(self);
+	g_return_val_if_fail(FU_IS_PROGRESS(self), FWUPD_STATUS_UNKNOWN);
+	return priv->status;
+}
+
+/**
+ * fu_progress_set_status:
+ * @self: a #FuProgress
+ * @status: device status
+ *
+ * Sets the status of the progress.
+ *
+ * Since: 1.7.0
+ **/
+void
+fu_progress_set_status(FuProgress *self, FwupdStatus status)
+{
+	FuProgressPrivate *priv = GET_PRIVATE(self);
+	g_return_if_fail(FU_IS_PROGRESS(self));
+
+	/* not changed */
+	if (priv->status == status)
+		return;
+
+	/* save */
+	priv->status = status;
+	g_signal_emit(self, signals[SIGNAL_STATUS_CHANGED], 0, status);
+}
 
 /**
  * fu_progress_get_percentage:
@@ -146,12 +237,6 @@ fu_progress_set_percentage(FuProgress *self, guint percentage)
 
 	/* save */
 	priv->percentage = percentage;
-
-	/* are we so low we don't care */
-	if (priv->global_share < 0.001)
-		return;
-
-	/* emit */
 	g_signal_emit(self, signals[SIGNAL_PERCENTAGE_CHANGED], 0, percentage);
 }
 
@@ -240,128 +325,72 @@ fu_progress_reset(FuProgress *self)
 		g_signal_handler_disconnect(priv->child, priv->percentage_child_id);
 		priv->percentage_child_id = 0;
 	}
-
-	/* unref child */
+	if (priv->status_child_id != 0) {
+		g_signal_handler_disconnect(priv->child, priv->status_child_id);
+		priv->status_child_id = 0;
+	}
 	g_clear_object(&priv->child);
 
 	/* no more step data */
-	g_clear_pointer(&priv->step_data, g_free);
-	g_clear_pointer(&priv->step_profile, g_free);
+	g_ptr_array_set_size(priv->steps, 0);
 }
 
 /**
- * fu_progress_set_steps_full:
+ * fu_progress_set_steps:
  * @self: A #FuProgress
- * @id: the code location
  * @step_max: The number of sub-tasks in this progress, can be 0
  *
  * Sets the number of sub-tasks, i.e. how many times the fu_progress_step_done()
  * function will be called in the loop.
  *
- * The function will immediately return when the number of step_max is 0
- * or if fu_progress_set_enabled(FALSE) was previously called.
- *
  * Since: 1.7.0
  **/
 void
-fu_progress_set_steps_full(FuProgress *self, const gchar *id, guint step_max)
+fu_progress_set_steps(FuProgress *self, guint step_max)
 {
 	FuProgressPrivate *priv = GET_PRIVATE(self);
 	g_return_if_fail(FU_IS_PROGRESS(self));
-
-	/* nothing to do for 0 step_max */
-	if (step_max == 0)
-		return;
-
-	/* did we call done on a self that did not have a size set? */
-	if (priv->step_max != 0) {
-		g_autoptr(GString) str = g_string_new(NULL);
-		fu_progress_build_parent_chain(self, str, 0);
-		g_warning("step_max already set to %u, can't set %u! [%s]: %s",
-			  priv->step_max,
-			  step_max,
-			  id,
-			  str->str);
-		return;
-	}
-
-	/* set id */
-	g_free(priv->id);
-	priv->id = g_strdup(id);
 
 	/* only use the timer if profiling; it's expensive */
 	if (priv->profile)
 		g_timer_start(priv->timer);
 
-	/* imply reset */
-	fu_progress_reset(self);
-
 	/* set step_max */
 	priv->step_max = step_max;
-
-	/* global share just got smaller */
-	priv->global_share /= step_max;
 }
 
 /**
- * fu_progress_set_custom_steps_full:
+ * fu_progress_add_step:
  * @self: A #FuProgress
- * @id: the code location
+ * @status: status value to use for this phase
  * @value: A step weighting variable argument array
  *
  * This sets the step weighting, which you will want to do if one action
  * will take a bigger chunk of time than another.
  *
- * All the values must add up to 100, and the list must end with -1.
- * Do not use this function directly, instead use the fu_progress_set_custom_steps() macro.
- *
  * Since: 1.7.0
  **/
 void
-fu_progress_set_custom_steps_full(FuProgress *self, const gchar *id, guint value, ...)
+fu_progress_add_step(FuProgress *self, FwupdStatus status, guint value)
 {
 	FuProgressPrivate *priv = GET_PRIVATE(self);
-	va_list args;
-	guint total = value;
-	guint i;
+	FuProgressStep *step;
 
 	g_return_if_fail(FU_IS_PROGRESS(self));
 
-	/* process the valist */
-	va_start(args, value);
-	for (i = 0;; i++) {
-		guint value_temp = va_arg(args, guint);
-		if (value_temp == (guint)-1)
-			break;
-		total += value_temp;
-	}
-	va_end(args);
+	/* current status */
+	if (priv->steps->len == 0)
+		fu_progress_set_status(self, status);
 
-	/* does not sum to 100% */
-	if (total != 100) {
-		g_warning("percentage not 100: %u", total);
-		return;
-	}
+	/* save data */
+	step = g_new0(FuProgressStep, 1);
+	step->status = status;
+	step->value = value;
+	step->profile = .0;
+	g_ptr_array_add(priv->steps, step);
 
-	/* set step number */
-	fu_progress_set_steps_full(self, id, i + 1);
-
-	/* save this data */
-	total = value;
-	priv->step_data = g_new0(guint, i + 2);
-	priv->step_profile = g_new0(gdouble, i + 2);
-	priv->step_data[0] = total;
-	va_start(args, value);
-	for (i = 0;; i++) {
-		guint value_temp = va_arg(args, guint);
-		if (value_temp == (guint)-1)
-			break;
-
-		/* we pre-add the data to make access simpler */
-		total += value_temp;
-		priv->step_data[i + 1] = total;
-	}
-	va_end(args);
+	/* in case anything is not using ->steps */
+	fu_progress_set_steps(self, priv->steps->len);
 }
 
 /**
@@ -384,9 +413,8 @@ fu_progress_finished(FuProgress *self)
 
 	/* all done */
 	priv->step_now = priv->step_max;
-
-	/* set new percentage */
 	fu_progress_set_percentage(self, 100);
+	fu_progress_set_status(self, FWUPD_STATUS_UNKNOWN);
 }
 
 static gdouble
@@ -400,6 +428,28 @@ fu_progress_discrete_to_percent(guint discrete, guint step_max)
 		return 0;
 	}
 	return ((gdouble)discrete * (100.0f / (gdouble)(step_max)));
+}
+
+static gdouble
+fu_progress_get_step_percentage(FuProgress *self, guint idx)
+{
+	FuProgressPrivate *priv = GET_PRIVATE(self);
+	guint current = 0;
+	guint total = 0;
+
+	for (guint i = 0; i < priv->steps->len; i++) {
+		FuProgressStep *step = g_ptr_array_index(priv->steps, i);
+		if (i <= idx)
+			current += step->value;
+		total += step->value;
+	}
+	return ((gdouble)current * 100.f) / (gdouble)total;
+}
+
+static void
+fu_progress_child_status_changed_cb(FuProgress *child, FwupdStatus status, FuProgress *self)
+{
+	fu_progress_set_status(self, status);
 }
 
 static void
@@ -428,16 +478,16 @@ fu_progress_child_percentage_changed_cb(FuProgress *child, guint percentage, FuP
 	}
 
 	/* we have to deal with non-linear step_max */
-	if (priv->step_data != NULL) {
+	if (priv->steps->len > 0) {
 		/* we don't store zero */
 		if (priv->step_now == 0) {
-			parent_percentage = percentage * priv->step_data[priv->step_now] / 100;
+			gdouble pc = fu_progress_get_step_percentage(self, 0);
+			parent_percentage = percentage * pc / 100;
 		} else {
+			gdouble pc1 = fu_progress_get_step_percentage(self, priv->step_now - 1);
+			gdouble pc2 = fu_progress_get_step_percentage(self, priv->step_now);
 			/* bi-linearly interpolate */
-			parent_percentage =
-			    (((100 - percentage) * priv->step_data[priv->step_now - 1]) +
-			     (percentage * priv->step_data[priv->step_now])) /
-			    100;
+			parent_percentage = (((100 - percentage) * pc1) + (percentage * pc2)) / 100;
 		}
 		goto out;
 	}
@@ -447,13 +497,8 @@ fu_progress_child_percentage_changed_cb(FuProgress *child, guint percentage, FuP
 
 	/* get the range between the parent step and the next parent step */
 	range = fu_progress_discrete_to_percent(priv->step_now + 1, priv->step_max) - offset;
-	if (range < 0.01) {
-		g_warning("range=%f (from %u to %u), should be impossible",
-			  range,
-			  priv->step_now + 1,
-			  priv->step_max);
+	if (range < 0.01)
 		return;
-	}
 
 	/* get the extra contributed by the child */
 	extra = ((gdouble)percentage / 100.0f) * range;
@@ -464,20 +509,12 @@ out:
 	fu_progress_set_percentage(self, parent_percentage);
 }
 
-static gdouble
-fu_progress_get_global_share(FuProgress *self)
-{
-	FuProgressPrivate *priv = GET_PRIVATE(self);
-	return priv->global_share;
-}
-
 static void
 fu_progress_set_parent(FuProgress *self, FuProgress *parent)
 {
 	FuProgressPrivate *priv = GET_PRIVATE(self);
 	g_return_if_fail(FU_IS_PROGRESS(self));
 	priv->parent = parent; /* no ref! */
-	priv->global_share = fu_progress_get_global_share(parent);
 	priv->profile = fu_progress_get_profile(parent);
 }
 
@@ -509,6 +546,10 @@ fu_progress_get_child(FuProgress *self)
 			     "percentage-changed",
 			     G_CALLBACK(fu_progress_child_percentage_changed_cb),
 			     self);
+	priv->status_child_id = g_signal_connect(priv->child,
+						 "status-changed",
+						 G_CALLBACK(fu_progress_child_status_changed_cb),
+						 self);
 	fu_progress_set_parent(priv->child, self);
 	return priv->child;
 }
@@ -519,39 +560,40 @@ fu_progress_show_profile(FuProgress *self)
 	FuProgressPrivate *priv = GET_PRIVATE(self);
 	gdouble division;
 	gdouble total_time = 0.0f;
-	GString *result;
-	guint i;
-	guint uncumalitive = 0;
+	g_autoptr(GString) result = NULL;
 
 	/* get the total time so we can work out the divisor */
 	result = g_string_new("Raw timing data was { ");
-	for (i = 0; i < priv->step_max; i++) {
-		g_string_append_printf(result, "%.3f, ", priv->step_profile[i]);
+	for (guint i = 0; i < priv->step_max; i++) {
+		FuProgressStep *step = g_ptr_array_index(priv->steps, i);
+		g_string_append_printf(result, "%.3f, ", step->profile);
 	}
 	if (priv->step_max > 0)
 		g_string_set_size(result, result->len - 2);
-	g_string_append(result, " }\n");
+	g_string_append(result, " } -- ");
 
 	/* get the total time so we can work out the divisor */
-	for (i = 0; i < priv->step_max; i++)
-		total_time += priv->step_profile[i];
+	for (guint i = 0; i < priv->step_max; i++) {
+		FuProgressStep *step = g_ptr_array_index(priv->steps, i);
+		total_time += step->profile;
+	}
 	division = total_time / 100.0f;
 
 	/* what we set */
-	g_string_append(result, "step_max were set as [ ");
-	for (i = 0; i < priv->step_max; i++) {
-		g_string_append_printf(result, "%u, ", priv->step_data[i] - uncumalitive);
-		uncumalitive = priv->step_data[i];
+	g_string_append(result, "steps were set as [ ");
+	for (guint i = 0; i < priv->step_max; i++) {
+		FuProgressStep *step = g_ptr_array_index(priv->steps, i);
+		g_string_append_printf(result, "%u ", step->value);
 	}
 
 	/* what we _should_ have set */
-	g_string_append_printf(result, "-1 ] but should have been: [ ");
-	for (i = 0; i < priv->step_max; i++) {
-		g_string_append_printf(result, "%.0f, ", priv->step_profile[i] / division);
+	g_string_append_printf(result, "] but should have been [ ");
+	for (guint i = 0; i < priv->step_max; i++) {
+		FuProgressStep *step = g_ptr_array_index(priv->steps, i);
+		g_string_append_printf(result, "%.0f ", step->profile / division);
 	}
-	g_string_append(result, "-1 ]");
-	g_printerr("\n\n%s at %s\n\n", result->str, priv->id);
-	g_string_free(result, TRUE);
+	g_string_append(result, "]");
+	g_debug("%s at %s", result->str, priv->id);
 }
 
 /**
@@ -580,9 +622,10 @@ fu_progress_step_done(FuProgress *self)
 
 	/* save the duration in the array */
 	if (priv->profile) {
-		gdouble elapsed = g_timer_elapsed(priv->timer, NULL);
-		if (priv->step_profile != NULL)
-			priv->step_profile[priv->step_now] = elapsed;
+		if (priv->steps->len > 0) {
+			FuProgressStep *step = g_ptr_array_index(priv->steps, priv->step_now);
+			step->profile = g_timer_elapsed(priv->timer, NULL);
+		}
 		g_timer_start(priv->timer);
 	}
 
@@ -612,17 +655,26 @@ fu_progress_step_done(FuProgress *self)
 	/* another */
 	priv->step_now++;
 
+	/* update status */
+	if (priv->steps->len > 0) {
+		if (priv->step_now == priv->step_max) {
+			fu_progress_set_status(self, FWUPD_STATUS_UNKNOWN);
+		} else {
+			FuProgressStep *step = g_ptr_array_index(priv->steps, priv->step_now);
+			fu_progress_set_status(self, step->status);
+		}
+	}
+
 	/* find new percentage */
-	if (priv->step_data == NULL) {
+	if (priv->steps->len == 0) {
 		percentage = fu_progress_discrete_to_percent(priv->step_now, priv->step_max);
 	} else {
-		/* this is cumalative */
-		percentage = priv->step_data[priv->step_now - 1];
+		percentage = fu_progress_get_step_percentage(self, priv->step_now - 1);
 	}
 	fu_progress_set_percentage(self, (guint)percentage);
 
 	/* show any profiling stats */
-	if (priv->profile && priv->step_now == priv->step_max && priv->step_profile != NULL)
+	if (priv->profile && priv->step_now == priv->step_max && priv->steps->len > 0)
 		fu_progress_show_profile(self);
 
 	/* reset child if it exists */
@@ -658,8 +710,8 @@ static void
 fu_progress_init(FuProgress *self)
 {
 	FuProgressPrivate *priv = GET_PRIVATE(self);
-	priv->global_share = 1.0f;
 	priv->timer = g_timer_new();
+	priv->steps = g_ptr_array_new_with_free_func(g_free);
 }
 
 static void
@@ -670,8 +722,7 @@ fu_progress_finalize(GObject *object)
 
 	fu_progress_reset(self);
 	g_free(priv->id);
-	g_free(priv->step_data);
-	g_free(priv->step_profile);
+	g_ptr_array_unref(priv->steps);
 	g_timer_destroy(priv->timer);
 
 	G_OBJECT_CLASS(fu_progress_parent_class)->finalize(object);
@@ -688,6 +739,17 @@ fu_progress_class_init(FuProgressClass *klass)
 			 G_TYPE_FROM_CLASS(object_class),
 			 G_SIGNAL_RUN_LAST,
 			 G_STRUCT_OFFSET(FuProgressClass, percentage_changed),
+			 NULL,
+			 NULL,
+			 g_cclosure_marshal_VOID__UINT,
+			 G_TYPE_NONE,
+			 1,
+			 G_TYPE_UINT);
+	signals[SIGNAL_STATUS_CHANGED] =
+	    g_signal_new("status-changed",
+			 G_TYPE_FROM_CLASS(object_class),
+			 G_SIGNAL_RUN_LAST,
+			 G_STRUCT_OFFSET(FuProgressClass, status_changed),
 			 NULL,
 			 NULL,
 			 g_cclosure_marshal_VOID__UINT,

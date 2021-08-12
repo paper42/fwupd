@@ -3312,8 +3312,12 @@ fu_progress_non_equal_steps_func(void)
 	FuProgress *grandchild;
 
 	/* test non-equal steps */
-	fu_progress_set_custom_steps(progress, 20, 60, 20, -1);
+	fu_progress_set_id(progress, G_STRLOC);
+	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_ERASE, 20);
+	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_WRITE, 60);
+	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_READ, 20);
 	g_assert_cmpint(fu_progress_get_percentage(progress), ==, 0);
+	g_assert_cmpint(fu_progress_get_status(progress), ==, FWUPD_STATUS_DEVICE_ERASE);
 
 	/* child step should increment according to the custom steps */
 	child = fu_progress_get_child(progress);
@@ -3329,16 +3333,21 @@ fu_progress_non_equal_steps_func(void)
 	fu_progress_step_done(child);
 
 	fu_progress_step_done(progress);
+	g_assert_cmpint(fu_progress_get_status(progress), ==, FWUPD_STATUS_DEVICE_WRITE);
 
 	/* verify 20% */
 	g_assert_cmpint(fu_progress_get_percentage(progress), ==, 20);
 
 	/* child step should increment according to the custom steps */
 	child = fu_progress_get_child(progress);
-	fu_progress_set_custom_steps(child, 25, 75, -1);
+	fu_progress_set_id(child, G_STRLOC);
+	fu_progress_add_step(child, FWUPD_STATUS_DEVICE_RESTART, 25);
+	fu_progress_add_step(child, FWUPD_STATUS_DEVICE_WRITE, 75);
+	g_assert_cmpint(fu_progress_get_status(progress), ==, FWUPD_STATUS_DEVICE_RESTART);
 
 	/* start child */
 	fu_progress_step_done(child);
+	g_assert_cmpint(fu_progress_get_status(progress), ==, FWUPD_STATUS_DEVICE_WRITE);
 
 	/* verify bilinear interpolation is working */
 	g_assert_cmpint(fu_progress_get_percentage(progress), ==, 35);
@@ -3352,7 +3361,9 @@ fu_progress_non_equal_steps_func(void)
 	 *                     |---------------||--| (90%)
 	 */
 	grandchild = fu_progress_get_child(child);
-	fu_progress_set_custom_steps(grandchild, 90, 10, -1);
+	fu_progress_set_id(grandchild, G_STRLOC);
+	fu_progress_add_step(grandchild, FWUPD_STATUS_DEVICE_ERASE, 90);
+	fu_progress_add_step(grandchild, FWUPD_STATUS_DEVICE_WRITE, 10);
 
 	fu_progress_step_done(grandchild);
 
@@ -3365,6 +3376,7 @@ fu_progress_non_equal_steps_func(void)
 	fu_progress_step_done(child);
 
 	fu_progress_step_done(progress);
+	g_assert_cmpint(fu_progress_get_status(progress), ==, FWUPD_STATUS_DEVICE_READ);
 
 	/* verify 80% */
 	g_assert_cmpint(fu_progress_get_percentage(progress), ==, 80);
@@ -3373,6 +3385,7 @@ fu_progress_non_equal_steps_func(void)
 
 	/* verify 100% */
 	g_assert_cmpint(fu_progress_get_percentage(progress), ==, 100);
+	g_assert_cmpint(fu_progress_get_status(progress), ==, FWUPD_STATUS_UNKNOWN);
 }
 
 static void
