@@ -1214,14 +1214,15 @@ fu_util_download_metadata (FuUtilPrivate *priv, GError **error)
 		if (!fu_util_check_oldest_remote (priv, &age_oldest, error))
 			return FALSE;
 		if (age_oldest < 60 * 60 * age_limit_hours) {
-			g_set_error (error,
-				     FWUPD_ERROR,
-				     FWUPD_ERROR_NOTHING_TO_DO,
-				     /* TRANSLATORS: error message for a user who ran fwupdmgr refresh recently
-				        %1 is an already translated timestamp such as 6 hours or 15 seconds */
-				     "Firmware metadata last refresh: %s ago. "
-				     "Use --force to refresh again.",
-				     fu_util_time_to_str (age_oldest));
+			g_set_error(error,
+				    FWUPD_ERROR,
+				    FWUPD_ERROR_NOTHING_TO_DO,
+				    /* TRANSLATORS: error message for a user who ran fwupdmgr
+				       refresh recently %1 is an already translated timestamp such
+				       as 6 hours or 15 seconds */
+				    _("Firmware metadata last refresh: %s ago. "
+				      "Use --force to refresh again."),
+				    fu_util_time_to_str(age_oldest));
 			return FALSE;
 		}
 	}
@@ -1638,10 +1639,10 @@ fu_util_get_updates (FuUtilPrivate *priv, gchar **values, GError **error)
 	}
 	/* no updates available */
 	if (g_node_n_nodes (root, G_TRAVERSE_ALL) <= 1) {
-		g_set_error_literal (error,
-				     FWUPD_ERROR,
-				     FWUPD_ERROR_NOTHING_TO_DO,
-				     "No updates available for remaining devices");
+		g_set_error_literal(error,
+				    FWUPD_ERROR,
+				    FWUPD_ERROR_NOTHING_TO_DO,
+				    _("No updates available for remaining devices"));
 		return FALSE;
 	}
 
